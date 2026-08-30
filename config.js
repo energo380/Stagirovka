@@ -15,4 +15,4 @@
    этот файл не нужно.
    ============================================================ */
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbwXBMeiVpzBrwHLA5Ath4H6y7EcMvMwxWGRpsZV-ISG1v1Lk49YSp09jw66ksAdhofdjg/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbz1a2nuAqwg-VD7bgs6trDy_5b6Z5N9B72s6IHkOO1DWTK1-bFOMNT4ZzoaJUJ1pILGJA/exec';
