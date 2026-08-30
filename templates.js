@@ -126,6 +126,81 @@ const PROGRAM_HOURS = PROGRAM.reduce(function (sum, sec) {
 const PROGRAM_SHIFTS = PROGRAM_HOURS / HOURS_PER_SHIFT;   // 112 / 8 = 14
 
 
+/**
+ * Программа под фактическое число смен.
+ *
+ * Базовая программа расписана на PROGRAM_SHIFTS смен. Если стажировку
+ * назначили короче, часы каждой темы уменьшаются пропорционально.
+ * Остаток от деления раздаётся темам с наибольшей дробной частью,
+ * поэтому сумма по таблице всегда сходится с итогом ровно.
+ *
+ * Без этого в акте печаталось «112 часов (14 смен)» независимо от
+ * карточки, и акт противоречил распоряжению, где стояло введённое
+ * число смен.
+ */
+function programFor(shifts) {
+    const n = Number(shifts);
+    const target = (!n || n < 1) ? PROGRAM_HOURS : n * HOURS_PER_SHIFT;
+
+    // Плоский список тем с точной, ещё дробной долей часов
+    const flat = [];
+    PROGRAM.forEach(function (sec, si) {
+        sec.items.forEach(function (it) {
+            flat.push({
+                si: si, no: it.no, title: it.title,
+                exact: it.hours * target / PROGRAM_HOURS
+            });
+        });
+    });
+
+    // Целые части, но не меньше часа на тему
+    let given = 0;
+    flat.forEach(function (f) {
+        f.hours = Math.max(1, Math.floor(f.exact));
+        given += f.hours;
+    });
+
+    // Остаток - темам с самой большой дробной частью
+    let left = target - given;
+    const byRest = flat.slice().sort(function (a, b) {
+        return (b.exact - Math.floor(b.exact)) - (a.exact - Math.floor(a.exact));
+    });
+    for (let i = 0; left > 0 && i < byRest.length; i++) {
+        byRest[i].hours++;
+        left--;
+    }
+
+    // Обратный случай: минимум в один час на тему перебрал итог.
+    // Снимаем лишнее с самых объёмных тем, пока сумма не сойдётся.
+    while (left < 0) {
+        const donors = flat.filter(function (f) { return f.hours > 1; })
+                           .sort(function (a, b) { return b.hours - a.hours; });
+        if (!donors.length) break;   // стажировка короче, чем тем в программе
+        donors[0].hours--;
+        left++;
+    }
+
+    // Собираем обратно по разделам и считаем итог по факту,
+    // чтобы «Итого» никогда не разошлось со столбцом часов
+    const sections = PROGRAM.map(function (sec, si) {
+        const items = flat.filter(function (f) { return f.si === si; });
+        return {
+            title: sec.title,
+            items: items,
+            hours: items.reduce(function (s, f) { return s + f.hours; }, 0)
+        };
+    });
+
+    const total = sections.reduce(function (s, sec) { return s + sec.hours; }, 0);
+
+    return {
+        sections: sections,
+        hours: total,
+        shifts: Math.round(total / HOURS_PER_SHIFT)
+    };
+}
+
+
 /* ------------------------------------------------------------
    ОФОРМЛЕНИЕ ПЕЧАТИ
    Нулевые поля страницы плюс собственные отступы документа -
@@ -357,19 +432,18 @@ function renderOrderTraining(card, org) {
    потерялись, если их разложат по разным папкам.
    ============================================================ */
 function renderAct(card, org) {
-    let n = 0;
-    const rows = PROGRAM.map(function (sec) {
-        const secHours = sec.items.reduce(function (s, i) { return s + i.hours; }, 0);
+    // Программа под число смен из карточки
+    const prog = programFor(card['Количество смен']);
 
+    const rows = prog.sections.map(function (sec) {
         let html = '<tr class="sec">' +
             '<td class="c-no"></td>' +
             '<td>' + tplEsc(sec.title.replace('{ORG}', org)) + '</td>' +
-            '<td class="c-hours">' + secHours + '</td>' +
+            '<td class="c-hours">' + sec.hours + '</td>' +
             '<td class="c-sign"></td>' +
         '</tr>';
 
         html += sec.items.map(function (it) {
-            n++;
             return '<tr>' +
                 '<td class="c-no">' + it.no + '</td>' +
                 '<td>' + tplEsc(it.title.replace('{ORG}', org)) + '</td>' +
@@ -386,7 +460,8 @@ function renderAct(card, org) {
       '<div class="doc-org">' + tplEsc(org) + '</div>' +
       '<div class="doc-kind">АКТ</div>' +
       '<div class="doc-title">прохождения программы стажировки на рабочем месте ' +
-        'оперативно-ремонтного электротехнического персонала</div>' +
+        tplEsc(String(card['Категория персонала'] || 'оперативно-ремонтного').trim()) +
+        ' электротехнического персонала</div>' +
 
       '<div class="doc-ref">к распоряжению № ' + docNumber(card, 'С') +
         ' от ' + tplEsc(card['Дата распоряжения о стажировке']) + ' г.</div>' +
@@ -400,7 +475,7 @@ function renderAct(card, org) {
         ', дата рождения ' + blank(card['Дата рождения'], 28) +
         ', образование ' + blank(card['Образование'], 55) +
         ' прошёл программу стажировки на рабочем месте в объёме ' +
-        PROGRAM_HOURS + ' часов (' + PROGRAM_SHIFTS + ' рабочих смен).</div>' +
+        prog.hours + ' часов (' + prog.shifts + ' рабочих смен).</div>' +
 
       '<div class="doc-field">Руководитель стажировки: ' +
         blank(card['Руководитель стажировки должность'], 55) + ' ' +
@@ -418,7 +493,7 @@ function renderAct(card, org) {
         '</tr></thead>' +
         '<tbody>' + rows +
           '<tr><td colspan="2" class="total">Итого</td>' +
-          '<td class="c-hours"><b>' + PROGRAM_HOURS + '</b></td>' +
+          '<td class="c-hours"><b>' + prog.hours + '</b></td>' +
           '<td class="c-sign"></td></tr>' +
         '</tbody>' +
       '</table>' +
