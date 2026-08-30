@@ -6,15 +6,18 @@
      Кладётся рядом с templates.js и config.js.
 
      Адрес веб-приложения Apps Script лежит в config.js -
-     при обновлении этого файла вписывать его заново не нужно.+
+     при обновлении этого файла вписывать его заново не нужно.
      ============================================================ -->
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Стажировки</title>
-<script src="config.js"></script>
-<script src="templates.js"></script>
+<!-- ?v=2 - метка версии. Браузер и CDN GitHub держат статику до
+     десяти минут; при правке templates.js или config.js увеличьте
+     цифру, и обновление подхватится сразу, без Ctrl+F5. -->
+<script src="config.js?v=2"></script>
+<script src="templates.js?v=2"></script>
 <style>
 :root {
     --paper:   #edf0f3;
@@ -519,8 +522,9 @@ const PAGE = 20;
 const RETRIES = [20000, 60000, 150000];
 const MAX_MB = 8;
 
-/* Статусы продублированы из Setup.gs. Если правите список там,
-   поправьте и здесь - init их не передаёт. */
+/* Запасной список статусов. Основной приходит с сервера в ответе
+   init, так что править Setup.gs достаточно в одном месте.
+   Этот остаётся на случай старой версии скрипта в таблице. */
 const STATUSES = [
     'Стажировка назначена',
     'Стажировка пройдена',
@@ -537,6 +541,9 @@ const GROUPS = ['II до 1000 В', 'III до 1000 В', 'III до и выше 100
 const FORM = [
   { title: 'Работник', fields: [
       ['ФИО полное', 'text', { req: true, wide: true }],
+      // Заполняется само из полного ФИО, но в бумагах встречаются
+      // оба варианта написания, поэтому оставлена правка руками
+      ['ФИО сокращённое', 'text'],
       ['Должность', 'text', { req: true }],
       ['Подразделение', 'dept', { req: true }],
       ['Дата рождения', 'date'],
@@ -580,7 +587,7 @@ const POST_OF = {
 
 const S = {
     pass: '', user: '', org: '', role: 'user',
-    departments: [], people: [], docTypes: [],
+    departments: [], people: [], docTypes: [], statuses: STATUSES,
     offset: 0, total: 0,
     current: null, files: [],
     all: []
@@ -675,18 +682,39 @@ function plusYear(ru) {
 
 /* ============================================================
    ЗАПРОСЫ
-   Обычные - через JSONP: Apps Script не отвечает на предварительный
-   запрос OPTIONS, который браузер шлёт перед обычным fetch.
-   Загрузка файлов - POST с Content-Type: text/plain, при нём
-   предварительный запрос не возникает.
+
+   Основной способ - POST с заголовком text/plain. При нём браузер
+   не шлёт предварительный запрос OPTIONS, на который Apps Script
+   не умеет отвечать. Две причины предпочесть его JSONP:
+
+   1. У адресной строки есть предел длины. Заполненная карточка
+      в кириллице после кодирования занимала около девяти килобайт,
+      и запрос отклонялся ещё на подходе к серверу - на экране это
+      выглядело как «Нет связи с сервером».
+   2. Пароль в POST не попадает в адрес, а значит и в журналы
+      Google и в историю браузера.
+
+   Если POST не проходит (антивирус с проверкой HTTPS, политика
+   браузера, корпоративный прокси), один раз за сеанс происходит
+   откат на JSONP - тот самый способ, что работал раньше. Дальше
+   все запросы идут только им, повторно POST не пробуется.
    ============================================================ */
 
-function api(params) {
+let postWorks = null;   // null - ещё не проверяли, true/false - уже знаем
+
+/** Объект (карточка) в адресной строке должен стать текстом. */
+function flatValue_(v) {
+    if (v === null || v === undefined) return v;
+    return (typeof v === 'object') ? JSON.stringify(v) : v;
+}
+
+function jsonp_(params) {
     return new Promise(function (resolve) {
         const cb = 'cb_' + Date.now() + '_' + Math.floor(Math.random() * 1e6);
         const url = new URL(API);
         Object.keys(params).forEach(function (k) {
-            if (params[k] !== undefined && params[k] !== null) url.searchParams.append(k, params[k]);
+            const v = flatValue_(params[k]);
+            if (v !== undefined && v !== null) url.searchParams.append(k, v);
         });
         url.searchParams.append('callback', cb);
 
@@ -714,16 +742,47 @@ function api(params) {
     });
 }
 
-async function apiPost(payload) {
+async function post_(payload) {
+    const r = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+}
+
+async function api(params) {
+    if (postWorks === false) return jsonp_(params);
+
     try {
-        const r = await fetch(API, {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-            body: JSON.stringify(payload)
-        });
-        return await r.json();
+        const r = await post_(params);
+        postWorks = true;
+        return r;
     } catch (e) {
-        return { success: false, error: 'Нет связи с сервером', net: true };
+        if (postWorks === true) {
+            // POST в этом сеансе уже работал, значит дело не в запрете,
+            // а в связи. Повторять через JSONP смысла нет.
+            return { success: false, error: 'Нет связи с сервером', net: true };
+        }
+        postWorks = false;
+        return jsonp_(params);
+    }
+}
+
+/**
+ * Скан отправляется только POST-ом: восемь мегабайт в адресную
+ * строку не помещаются, запасного пути здесь нет.
+ */
+async function apiUpload_(payload) {
+    try {
+        return await post_(payload);
+    } catch (e) {
+        return {
+            success: false, net: true,
+            error: 'Не удалось отправить файл. Если карточки сохраняются, ' +
+                   'а сканы нет - мешает антивирус или расширение браузера.'
+        };
     }
 }
 
@@ -755,13 +814,14 @@ function applyInit(r) {
     S.departments = r.departments || [];
     S.people = r.people || [];
     S.docTypes = r.docTypes || [];
+    S.statuses = (r.statuses && r.statuses.length) ? r.statuses : STATUSES;
 
     $('roleTag').style.display = isAdmin() ? 'inline-block' : 'none';
     $('uploadHint').style.display = isAdmin() ? 'block' : 'none';
     $('org').textContent = S.org;
 
     fillSelect($('fDept'), S.departments, '', 'Все подразделения');
-    fillSelect($('fStatus'), STATUSES, '', 'Любой статус');
+    fillSelect($('fStatus'), S.statuses, '', 'Любой статус');
 
     const years = [];
     const y = new Date().getFullYear();
@@ -885,7 +945,9 @@ function rowHtml(c) {
    ============================================================ */
 
 async function loadDue() {
-    const r = await api({ action: 'list', password: S.pass, limit: 200 });
+    // Берём весь реестр: сроки считаются по всем карточкам, иначе
+    // старые записи молча выпадают из напоминаний
+    const r = await api({ action: 'list', password: S.pass, limit: 5000 });
     if (!r.success) return;
     S.all = r.cards;
 
@@ -1023,8 +1085,10 @@ function fieldHtml(f, d) {
                   '" value="' + esc(toISO(value)) + '">';
 
     } else if (kind === 'number') {
-        control = '<input type="number" min="1" max="60" id="' + id + '" data-name="' + esc(name) +
-                  '" value="' + esc(value || 14) + '">';
+        // Верхняя граница берётся из программы стажировки в templates.js:
+        // печатать в акте больше смен, чем в ней расписано, нечем
+        control = '<input type="number" min="2" max="' + PROGRAM_SHIFTS + '" id="' + id +
+                  '" data-name="' + esc(name) + '" value="' + esc(value || PROGRAM_SHIFTS) + '">';
 
     } else if (kind === 'dept') {
         control = selectHtml(id, name, S.departments, value, '—');
@@ -1124,7 +1188,9 @@ function validateClient(c) {
     const D = function (k) { return ruToDate(c[k]); };
 
     const shifts = Number(c['Количество смен']);
-    if (!shifts || shifts < 1 || shifts > 60) err.push('Количество смен должно быть от 1 до 60');
+    if (!shifts || shifts < 2 || shifts > PROGRAM_SHIFTS) {
+        err.push('Количество смен должно быть от 2 до ' + PROGRAM_SHIFTS);
+    }
 
     const order  = D('Дата распоряжения о стажировке');
     const start  = D('Дата начала стажировки');
@@ -1297,7 +1363,7 @@ async function uploadFiles() {
             throw new Error('Файл больше ' + MAX_MB + ' МБ');
         }
 
-        const r = await apiPost({
+        const r = await apiUpload_({
             action: 'upload', password: S.pass,
             cardId: S.current['id'], docType: $('docType').value,
             user: S.user, mime: isImage ? 'image/jpeg' : file.type, data: data
@@ -1400,9 +1466,14 @@ async function queueProcess() {
     queueBusy = true;
     queueSet(next.id, { status: 'sending', lastError: '' });
 
+    // Карточка уходит объектом. Раньше здесь стоял encodeURIComponent,
+    // а поверх него кодировал ещё и сам адрес: каждая русская буква
+    // занимала десять символов вместо одного, и заполненная карточка
+    // переставала помещаться в запрос.
     const params = {
         action: next.action, password: S.pass, user: S.user,
-        card: encodeURIComponent(JSON.stringify(next.card))
+        card: next.card,
+        tplVersion: TEMPLATE_VERSION
     };
     if (next.action === 'save') params.clientId = next.id;
     else params.id = next.cardId;
