@@ -3,16 +3,17 @@
      УЧЁТ СТАЖИРОВОК ЭЛЕКТРОТЕХНИЧЕСКОГО ПЕРСОНАЛА
      Версия 1.0
 
-     Кладётся рядом с templates.js. Больше ничего не нужно.
+     Кладётся рядом с templates.js и config.js.
 
-     ПЕРЕД ЗАПУСКОМ: вписать адрес веб-приложения Apps Script
-     в константу API_URL (строка помечена ниже).
+     Адрес веб-приложения Apps Script лежит в config.js -
+     при обновлении этого файла вписывать его заново не нужно.
      ============================================================ -->
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Стажировки</title>
+<script src="config.js"></script>
 <script src="templates.js"></script>
 <style>
 :root {
@@ -509,8 +510,9 @@ legend {
    НАСТРОЙКА
    ============================================================ */
 
-/* ВСТАВИТЬ СЮДА адрес веб-приложения Apps Script (оканчивается на /exec) */
-const API_URL = 'https://script.google.com/macros/s/AKfycbwXBMeiVpzBrwHLA5Ath4H6y7EcMvMwxWGRpsZV-ISG1v1Lk49YSp09jw66ksAdhofdjg/exec';
+/* Адрес сервера объявлен в config.js. Здесь он только читается,
+   поэтому обновление index.html его больше не затирает. */
+const API = (typeof API_URL !== 'undefined') ? String(API_URL).trim() : '';
 
 const TIMEOUT = 120000;
 const PAGE = 20;
@@ -682,7 +684,7 @@ function plusYear(ru) {
 function api(params) {
     return new Promise(function (resolve) {
         const cb = 'cb_' + Date.now() + '_' + Math.floor(Math.random() * 1e6);
-        const url = new URL(API_URL);
+        const url = new URL(API);
         Object.keys(params).forEach(function (k) {
             if (params[k] !== undefined && params[k] !== null) url.searchParams.append(k, params[k]);
         });
@@ -714,7 +716,7 @@ function api(params) {
 
 async function apiPost(payload) {
     try {
-        const r = await fetch(API_URL, {
+        const r = await fetch(API, {
             method: 'POST',
             headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify(payload)
@@ -1511,6 +1513,13 @@ docStyle.textContent = DOC_CSS;
 document.head.appendChild(docStyle);
 
 $('pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+
+/* Без адреса сервера сайт работать не будет - говорим об этом сразу,
+   а не после ввода пароля */
+if (!API || API.indexOf('/exec') === -1) {
+    $('loginErr').textContent = 'Не найден файл config.js с адресом сервера';
+    $('pass').disabled = true;
+}
 
 document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
