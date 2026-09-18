@@ -1,7 +1,19 @@
 <!DOCTYPE html>
 <!-- ============================================================
      УЧЁТ СТАЖИРОВОК ЭЛЕКТРОТЕХНИЧЕСКОГО ПЕРСОНАЛА
-     Версия 1.0
+     Версия 1.1
+
+     ЧТО ИЗМЕНИЛОСЬ В 1.1:
+       - сканы больше не уходят на сервер сразу: они ложатся в ту же
+         очередь, что и карточки, и досылаются, когда появится связь.
+         Сам файл лежит в IndexedDB, в очереди - только описание;
+       - должность подставляется при каждой смене человека в списке,
+         а не только в пустое поле;
+       - у даты рождения своя нижняя граница, 1930 год. Прежняя,
+         общая с остальными датами, отсекала всех, кто родился
+         до 2000 года. ТРЕБУЕТ Api.gs версии 1.2;
+       - отказ сервера больше не уносит введённое: содержимое
+         возвращается в форму вместе с сообщением об ошибке.
 
      Кладётся рядом с templates.js и config.js.
 
@@ -547,7 +559,9 @@ const FORM = [
       ['ФИО сокращённое', 'text'],
       ['Должность', 'text', { req: true }],
       ['Подразделение', 'dept', { req: true }],
-      ['Дата рождения', 'date'],
+      // Граница своя: общая для дат нижняя планка - 2000 год,
+      // и с ней не проходил ни один работник старше двадцати шести
+      ['Дата рождения', 'date', { min: '1930-01-01' }],
       ['Образование', 'text']
   ]},
   { title: 'Стажировка', fields: [
@@ -773,9 +787,10 @@ async function api(params) {
 
 /**
  * Скан отправляется только POST-ом: восемь мегабайт в адресную
- * строку не помещаются, запасного пути здесь нет.
+ * строку не помещаются, запасного пути через JSONP здесь нет.
+ * Поэтому любой сбой засчитывается сетевым - очередь повторит.
  */
-async function apiUpload_(payload) {
+async function postFile_(payload) {
     try {
         return await post_(payload);
     } catch (e) {
@@ -1068,10 +1083,10 @@ function buildForm(data) {
             esc(d['Причина аннулирования'] || '') + '. Правка запрещена.</p>');
     }
 
-    // Черновик новой карточки сохраняем при каждом изменении
-    if (!S.current) {
-        $('cardForm').addEventListener('input', saveDraft);
-    }
+    // Слушатель, который пишет черновик, здесь не навешивается:
+    // сам контейнер cardForm не пересоздаётся, у него меняется только
+    // содержимое, и повторная подписка копила бы обработчики. Он стоит
+    // один раз, в разделе «Запуск».
 }
 
 function fieldHtml(f, d) {
@@ -1082,8 +1097,11 @@ function fieldHtml(f, d) {
     let control;
 
     if (kind === 'date') {
+        // Границы те же, что проверяет сервер: браузер отсекает
+        // явную опечатку в годе ещё до отправки
         control = '<input type="date" id="' + id + '" data-name="' + esc(name) +
-                  '" value="' + esc(toISO(value)) + '">';
+                  '" min="' + esc(opt.min || '2000-01-01') + '" max="2100-12-31"' +
+                  ' value="' + esc(toISO(value)) + '">';
 
     } else if (kind === 'number') {
         // Верхняя граница берётся из программы стажировки в templates.js:
@@ -1137,8 +1155,11 @@ function pickPerson(sel) {
     })[0];
     if (!person) return;
 
+    // Должность подставляется всегда, а не только в пустое поле.
+    // pickPerson срабатывает лишь тогда, когда человека выбрали руками,
+    // и значение, оставшееся от прежнего работника, здесь уже неверно.
     const target = document.querySelector('[data-name="' + postField + '"]');
-    if (target && !target.value) target.value = person.post;
+    if (target) target.value = person.post;
 }
 
 function collectForm() {
@@ -1249,6 +1270,7 @@ function saveCard() {
 
     queueAdd({
         id: 'q_' + Date.now() + '_' + Math.floor(Math.random() * 1e6),
+        kind: 'card',
         status: 'pending',
         created: new Date().toLocaleString('ru-RU'),
         action: isNew ? 'save' : 'update',
@@ -1304,25 +1326,68 @@ function printDoc(kind) {
 
 /* ============================================================
    СКАНЫ
+
+   Скан не уходит на сервер сразу. Он ложится в ту же очередь,
+   что и карточка, и досылается, когда появится связь.
+
+   Хранилище у него своё. Очередь карточек живёт в localStorage,
+   а там около пяти мегабайт на весь сайт: PDF в base64 при
+   разрешённых восьми мегабайтах занимает одиннадцать миллионов
+   символов и не поместится туда никогда. Переполнение квоты
+   вдобавок проходит незаметно - setItem просто бросает исключение,
+   которое некому обработать, и человек видит «поставлено в очередь»
+   при пустой очереди.
+
+   Поэтому сам файл лежит в IndexedDB: квота там на два порядка
+   больше, и Blob хранится как есть, без перевода в base64.
+   В очереди остаётся только описание отправки со ссылкой на запись.
    ============================================================ */
 
-function renderFiles() {
-    if (!S.files.length) {
-        $('filesList').innerHTML = '<p class="hint" style="margin:0">Сканов пока нет.</p>';
-        return;
-    }
-    $('filesList').innerHTML = S.files.map(function (f) {
-        return '<div class="file">' +
-            '<a href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.type) + '</a>' +
-            '<span class="meta">' + esc(f.when) + ' · ' + esc(f.by || '') + '</span>' +
-            (isAdmin()
-                ? '<button class="btn btn-sm btn-danger" onclick="deleteFile(\'' + esc(f.id) + '\')">Удалить</button>'
-                : '') +
-        '</div>';
-    }).join('');
+const DB_NAME = 'stagirovka';
+const DB_STORE = 'files';
+let dbPromise = null;
+
+function db_() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise(function (resolve, reject) {
+        if (!window.indexedDB) { reject(new Error('Хранилище недоступно')); return; }
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = function () {
+            const d = req.result;
+            if (!d.objectStoreNames.contains(DB_STORE)) d.createObjectStore(DB_STORE);
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror   = function () { reject(req.error || new Error('Хранилище недоступно')); };
+    });
+    return dbPromise;
 }
 
-/** Сжатие происходит само, от пользователя ничего не требуется. */
+function dbRun_(mode, fn) {
+    return db_().then(function (d) {
+        return new Promise(function (resolve, reject) {
+            const tx = d.transaction(DB_STORE, mode);
+            const req = fn(tx.objectStore(DB_STORE));
+            req.onsuccess = function () { resolve(req.result); };
+            req.onerror   = function () { reject(req.error); };
+        });
+    });
+}
+
+function dbPut_(key, blob) { return dbRun_('readwrite', function (st) { return st.put(blob, key); }); }
+function dbGet_(key)       { return dbRun_('readonly',  function (st) { return st.get(key); }); }
+function dbDel_(key)       { return dbRun_('readwrite', function (st) { return st.delete(key); }); }
+
+/** Уборка за отправленным файлом. Не удалось - не беда, очередь важнее. */
+async function dbForget_(key) {
+    try { await dbDel_(key); } catch (e) {}
+}
+
+
+/**
+ * Сжатие происходит само, от пользователя ничего не требуется.
+ * Отдаётся Blob, а не строка base64: в хранилище он занимает на треть
+ * меньше, а в base64 переводится один раз, прямо перед отправкой.
+ */
 function compressImage(file) {
     return new Promise(function (resolve, reject) {
         const img = new Image();
@@ -1334,47 +1399,131 @@ function compressImage(file) {
             canvas.height = Math.round(img.height * scale);
             canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
             URL.revokeObjectURL(img.src);
-            resolve(canvas.toDataURL('image/jpeg', 0.7).split(',')[1]);
+            canvas.toBlob(function (blob) {
+                if (blob) resolve(blob);
+                else reject(new Error('Не удалось сжать изображение'));
+            }, 'image/jpeg', 0.7);
         };
         img.onerror = function () { reject(new Error('Не удалось прочитать изображение')); };
         img.src = URL.createObjectURL(file);
     });
 }
 
-function readBase64(file) {
+function blobBase64(blob) {
     return new Promise(function (resolve, reject) {
         const fr = new FileReader();
-        fr.onload = function () { resolve(String(fr.result).split(',')[1]); };
+        fr.onload  = function () { resolve(String(fr.result).split(',')[1]); };
         fr.onerror = function () { reject(new Error('Не удалось прочитать файл')); };
-        fr.readAsDataURL(file);
+        fr.readAsDataURL(blob);
     });
 }
+
+
+/** Сканы этой карточки, которые ещё не ушли на сервер. */
+function pendingFiles(cardId) {
+    if (!cardId) return [];
+    return queueLoad().filter(function (it) {
+        return it.kind === 'file' && it.cardId === cardId && it.status !== 'sent';
+    });
+}
+
+
+function renderFiles() {
+    const cardId = S.current ? S.current['id'] : '';
+    const waiting = pendingFiles(cardId);
+    // S.files мог не заполниться, если ответ сервера пришёл без списка:
+    // пустой список лучше, чем сломанная карточка
+    const files = S.files || [];
+
+    if (!files.length && !waiting.length) {
+        $('filesList').innerHTML = '<p class="hint" style="margin:0">Сканов пока нет.</p>';
+        return;
+    }
+
+    const done = files.map(function (f) {
+        return '<div class="file">' +
+            '<a href="' + esc(f.url) + '" target="_blank" rel="noopener">' + esc(f.type) + '</a>' +
+            '<span class="meta">' + esc(f.when) + ' · ' + esc(f.by || '') + '</span>' +
+            (isAdmin()
+                ? '<button class="btn btn-sm btn-danger" onclick="deleteFile(\'' + esc(f.id) + '\')">Удалить</button>'
+                : '') +
+        '</div>';
+    });
+
+    // Неотправленные показываем тут же. Иначе человек не видит, что скан
+    // лежит в очереди, и прикладывает его второй раз.
+    const waitingHtml = waiting.map(function (it) {
+        const state = it.status === 'error'   ? 'не ушло: ' + it.lastError :
+                      it.status === 'sending' ? 'отправляется' :
+                                                'ожидает отправки';
+        return '<div class="file">' +
+            '<span>' + esc(it.docType) + '</span>' +
+            '<span class="meta">' + esc(state) + '</span>' +
+            '<button class="btn btn-sm" onclick="dropItem(\'' + esc(it.id) + '\')">Убрать</button>' +
+        '</div>';
+    });
+
+    $('filesList').innerHTML = done.join('') + waitingHtml.join('');
+}
+
 
 async function uploadFiles() {
     const input = $('fileInput');
     const file = input.files[0];
     if (!file || !S.current || !S.current['id']) return;
 
+    const cardId = S.current['id'];
+    const docType = $('docType').value;
+    const who = S.current['ФИО сокращённое'] || S.current['ФИО полное'] || '';
+
     bar(true);
     try {
         const isImage = file.type.indexOf('image/') === 0;
-        const data = isImage ? await compressImage(file) : await readBase64(file);
+        const blob = isImage ? await compressImage(file) : file;
+        const mime = isImage ? 'image/jpeg' : (file.type || 'application/octet-stream');
 
-        if (data.length * 0.75 > MAX_MB * 1024 * 1024) {
+        if (blob.size > MAX_MB * 1024 * 1024) {
             throw new Error('Файл больше ' + MAX_MB + ' МБ');
         }
 
-        const r = await apiUpload_({
-            action: 'upload', password: S.pass,
-            cardId: S.current['id'], docType: $('docType').value,
-            user: S.user, mime: isImage ? 'image/jpeg' : file.type, data: data
+        const item = {
+            id: 'f_' + Date.now() + '_' + Math.floor(Math.random() * 1e6),
+            kind: 'file',
+            status: 'pending',
+            created: new Date().toLocaleString('ru-RU'),
+            cardId: cardId,
+            docType: docType,
+            mime: mime,
+            size: blob.size,
+            label: (who ? who + ' — ' : '') + docType,
+            attempts: 0,
+            lastError: ''
+        };
+
+        let stored = true;
+        try {
+            await dbPut_(item.id, blob);
+        } catch (e) {
+            stored = false;
+        }
+
+        if (stored) {
+            queueAdd(item);
+            toast('Скан поставлен в очередь');
+            queueProcess();
+            return;
+        }
+
+        // Хранилище недоступно - приватный режим или запрет в настройках
+        // браузера. Очереди не будет, пробуем отправить сразу, как раньше.
+        const r = await postFile_({
+            action: 'upload', password: S.pass, clientId: item.id,
+            cardId: cardId, docType: docType, user: S.user,
+            mime: mime, data: await blobBase64(blob)
         });
-
         if (!r.success) throw new Error(r.error || 'Не удалось загрузить');
-
         toast('Скан загружен');
-        const f = await api({ action: 'files', password: S.pass, cardId: S.current['id'] });
-        if (f.success) { S.files = f.files; renderFiles(); }
+        await refreshFiles(cardId);
 
     } catch (e) {
         toast(e.message, true);
@@ -1383,6 +1532,17 @@ async function uploadFiles() {
         input.value = '';
     }
 }
+
+
+/** Перечитывает список вложений, если карточка всё ещё открыта. */
+async function refreshFiles(cardId) {
+    const f = await api({ action: 'files', password: S.pass, cardId: cardId });
+    if (f.success && S.current && S.current['id'] === cardId) {
+        S.files = f.files || [];
+        renderFiles();
+    }
+}
+
 
 async function deleteFile(fileId) {
     const ok = await ask({
@@ -1417,8 +1577,14 @@ function clearDraft() { localStorage.removeItem('draft'); }
 /* ============================================================
    ОЧЕРЕДЬ ОТПРАВКИ
    Запись сначала ложится в память браузера, потом уходит на сервер.
+
+   В очереди лежат и карточки, и сканы: вид записан в поле kind.
+   У записей, оставшихся от прежней версии сайта, kind нет вовсе -
+   они считаются карточками, и досылка их не ломает.
+
    При создании карточки идёт clientId - сервер по нему отсекает
    повтор, поэтому досылка после обрыва связи не создаёт дубля.
+   У скана ту же роль играет id элемента очереди.
    ============================================================ */
 
 function queueLoad() {
@@ -1431,6 +1597,9 @@ function queueSave(a) {
     try { localStorage.setItem('queue', JSON.stringify(a)); } catch (e) {}
     renderQueueButton();
     if ($('queueModal').classList.contains('open')) renderQueue();
+    // Список вложений показывает и неотправленные сканы,
+    // значит он тоже зависит от состояния очереди
+    if ($('cardModal').classList.contains('open') && S.current && S.current['id']) renderFiles();
 }
 function queueAdd(item) { const a = queueLoad(); a.push(item); queueSave(a); }
 function queueSet(id, changes) {
@@ -1464,37 +1633,18 @@ async function queueProcess() {
     const next = queueLoad().filter(function (it) { return it.status === 'pending'; })[0];
     if (!next) return;
 
+    const isFile = next.kind === 'file';
+
     queueBusy = true;
     queueSet(next.id, { status: 'sending', lastError: '' });
 
-    // Карточка уходит объектом. Раньше здесь стоял encodeURIComponent,
-    // а поверх него кодировал ещё и сам адрес: каждая русская буква
-    // занимала десять символов вместо одного, и заполненная карточка
-    // переставала помещаться в запрос.
-    const params = {
-        action: next.action, password: S.pass, user: S.user,
-        card: next.card,
-        tplVersion: TEMPLATE_VERSION
-    };
-    if (next.action === 'save') params.clientId = next.id;
-    else params.id = next.cardId;
-
-    const r = await api(params);
+    const r = isFile ? await sendFile_(next) : await sendCard_(next);
     queueBusy = false;
 
     if (r && r.success) {
         queueSet(next.id, { status: 'sent', lastError: '' });
-        toast(r.duplicate ? 'Уже было записано ранее'
-            : (next.action === 'save' ? 'Карточка записана под № ' + r.number : 'Изменения сохранены'));
-
-        loadList(false);
-        loadDue();
-
-        // Если карточка всё ещё открыта - перечитываем её,
-        // чтобы появились номер, печать и вложения
-        const openedId = r.id || next.cardId;
-        if ($('cardModal').classList.contains('open') && openedId) openCard(openedId);
-
+        if (isFile) await afterFile_(next, r);
+        else        await afterCard_(next, r);
         setTimeout(queueProcess, 400);
         return;
     }
@@ -1507,15 +1657,128 @@ async function queueProcess() {
         queueSet(next.id, { status: 'error', lastError: msg, attempts: attempts });
         toast('Не ушло: ' + msg + '. Повторю автоматически.', true);
         scheduleRetry(attempts);
-    } else {
-        // Сервер разобрал запрос и отказал: со второй попытки будет то же самое.
-        // Держать такую запись в очереди незачем - она только сбивает с толку
-        // после того, как ошибку уже исправили в карточке.
-        queueSave(queueLoad().filter(function (x) { return x.id !== next.id; }));
-        if ($('cardModal').classList.contains('open')) showFormErr([msg]);
-        toast(msg, true);
+        return;
     }
+
+    // Сервер разобрал запрос и отказал: со второй попытки будет то же самое.
+    // Держать такую запись в очереди незачем - она только сбивает с толку
+    // после того, как ошибку уже исправили в карточке.
+    if (isFile) await dbForget_(next.id);
+    queueSave(queueLoad().filter(function (x) { return x.id !== next.id; }));
+
+    if (!isFile) {
+        await restoreCard_(next);
+        showFormErr([msg]);
+    }
+    toast(msg, true);
 }
+
+
+function sendCard_(item) {
+    // Карточка уходит объектом. Раньше здесь стоял encodeURIComponent,
+    // а поверх него кодировал ещё и сам адрес: каждая русская буква
+    // занимала десять символов вместо одного, и заполненная карточка
+    // переставала помещаться в запрос.
+    const params = {
+        action: item.action, password: S.pass, user: S.user,
+        card: item.card,
+        tplVersion: TEMPLATE_VERSION
+    };
+    if (item.action === 'save') params.clientId = item.id;
+    else params.id = item.cardId;
+
+    return api(params);
+}
+
+
+async function afterCard_(item, r) {
+    toast(r.duplicate ? 'Уже было записано ранее'
+        : (item.action === 'save' ? 'Карточка записана под № ' + r.number : 'Изменения сохранены'));
+
+    loadList(false);
+    loadDue();
+
+    // Если карточка всё ещё открыта - перечитываем её,
+    // чтобы появились номер, печать и вложения
+    const openedId = r.id || item.cardId;
+    if ($('cardModal').classList.contains('open') && openedId) await openCard(openedId);
+}
+
+
+/**
+ * Сервер отказал - возвращаем введённое обратно в форму.
+ *
+ * Без этого отказ уносил всё, что человек напечатал: черновик к тому
+ * моменту уже очищен, запись выброшена из очереди, а форма закрыта.
+ * Оставалась одна строка тоста, и набирать приходилось заново.
+ */
+async function restoreCard_(item) {
+    if (!$('cardModal').classList.contains('open')) {
+        if (item.action === 'save') {
+            try { localStorage.setItem('draft', JSON.stringify(item.card)); } catch (e) {}
+            await openCard(null);
+            return;
+        }
+        if (item.cardId) await openCard(item.cardId);
+    }
+    // Правки существующей карточки сервер не принял, значит в таблице
+    // их нет: возвращаем в поля то, что отправляли
+    if (item.action === 'update') applyToForm_(item.card);
+}
+
+
+/** Раскладывает значения по полям открытой формы. */
+function applyToForm_(card) {
+    if (!card) return;
+    $('cardForm').querySelectorAll('[data-name]').forEach(function (el) {
+        const name = el.getAttribute('data-name');
+        if (!(name in card)) return;
+        const v = card[name] === null || card[name] === undefined ? '' : String(card[name]);
+        el.value = (el.type === 'date') ? toISO(v) : v;
+    });
+}
+
+
+async function sendFile_(item) {
+    let blob = null;
+    try { blob = await dbGet_(item.id); } catch (e) {}
+
+    if (!blob) {
+        // Хранилище почистили, или файл в него не лёг. Повторять нечего,
+        // и это не обрыв связи: запись уйдёт из очереди с понятным текстом.
+        return {
+            success: false,
+            error: 'Скан «' + item.docType + '» потерялся в памяти браузера, приложите его заново'
+        };
+    }
+
+    let data;
+    try {
+        data = await blobBase64(blob);
+    } catch (e) {
+        // Файл в хранилище есть, но прочитать его не вышло. Повтор
+        // ничего не изменит, поэтому запись уходит из очереди - но
+        // человеку надо сказать, какой именно скан прикладывать заново.
+        return {
+            success: false,
+            error: 'Не удалось прочитать скан «' + item.docType + '» из памяти браузера, приложите его заново'
+        };
+    }
+
+    return postFile_({
+        action: 'upload', password: S.pass, clientId: item.id,
+        cardId: item.cardId, docType: item.docType, user: S.user,
+        mime: item.mime, data: data
+    });
+}
+
+
+async function afterFile_(item, r) {
+    await dbForget_(item.id);
+    toast(r.duplicate ? 'Скан уже был записан ранее' : 'Скан загружен');
+    if (S.current && S.current['id'] === item.cardId) await refreshFiles(item.cardId);
+}
+
 
 function scheduleRetry(attempts) {
     if (attempts > RETRIES.length) return;
@@ -1529,15 +1792,19 @@ function scheduleRetry(attempts) {
 }
 
 function retryItem(id) { queueSet(id, { status: 'pending', attempts: 0, lastError: '' }); queueProcess(); }
+
 async function dropItem(id) {
     const it = queueLoad().filter(function (x) { return x.id === id; })[0];
     if (it && it.status !== 'sent') {
         const ok = await ask({
-            text: 'Убрать из очереди? Запись не будет отправлена.',
+            text: (it.kind === 'file')
+                ? 'Убрать скан из очереди? Он не будет загружен.'
+                : 'Убрать из очереди? Запись не будет отправлена.',
             ok: 'Убрать', danger: true
         });
         if (!ok) return;
     }
+    if (it && it.kind === 'file') await dbForget_(id);
     queueSave(queueLoad().filter(function (x) { return x.id !== id; }));
 }
 
@@ -1561,9 +1828,13 @@ function renderQueue() {
     const label = { pending: 'В очереди', sending: 'Отправляется', error: 'Не ушло', sent: 'Записано' };
 
     $('queueBody').innerHTML = a.slice().reverse().map(function (it) {
+        const what = (it.kind === 'file')
+            ? 'скан: ' + it.docType
+            : (it.action === 'save' ? 'новая карточка' : 'изменения');
+
         return '<div class="qitem"><div class="main">' +
             '<div class="t">' + esc(it.label) + '</div>' +
-            '<div class="s">' + (it.action === 'save' ? 'новая карточка' : 'изменения') +
+            '<div class="s">' + esc(what) +
                 ' · ' + esc(it.created) + ' · ' + label[it.status] + '</div>' +
             (it.lastError ? '<div class="e">' + esc(it.lastError) + '</div>' : '') +
             '</div><div>' +
@@ -1585,6 +1856,11 @@ docStyle.textContent = DOC_CSS;
 document.head.appendChild(docStyle);
 
 $('pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+
+/* Черновик пишется только у новой карточки. Слушатель стоит на
+   контейнере, который живёт всё время работы страницы, поэтому
+   навешивается здесь один раз, а не при каждой сборке формы. */
+$('cardForm').addEventListener('input', function () { if (!S.current) saveDraft(); });
 
 /* Без адреса сервера сайт работать не будет - говорим об этом сразу,
    а не после ввода пароля */
