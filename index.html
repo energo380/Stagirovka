@@ -271,13 +271,22 @@ button, input, select { font-family: inherit; font-size: 15px; color: inherit; }
 .modal-foot .spacer { flex: 1 1 auto; }
 
 /* ---------- форма ---------- */
-fieldset { border: none; border-top: 1px solid var(--line); margin: 0 0 18px; padding: 14px 0 0; }
-fieldset:first-of-type { border-top: none; padding-top: 0; }
+/* Каждый раздел - в своей рамке, заголовок врезан в верхнюю линию.
+   Так видно, где кончается «Стажировка» и начинается «Акт». */
+fieldset {
+    border: 1px solid #c3ccd5;
+    border-radius: 6px;
+    background: #fafbfc;
+    margin: 0 0 22px;
+    padding: 14px 16px 16px;
+    min-width: 0;
+}
 legend {
     font-family: var(--serif);
-    font-size: 15px;
-    color: var(--muted);
-    padding: 0 8px 0 0;
+    font-size: 16px;
+    color: var(--accent);
+    padding: 0 8px;
+    margin-left: -4px;
 }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
 .f { display: flex; flex-direction: column; gap: 5px; }
@@ -290,8 +299,34 @@ legend {
     background: var(--surface);
     width: 100%;
 }
-.f input[type=date] { font-family: var(--mono); }
 .req label::after { content: ' *'; color: var(--accent); }
+
+/* Дата: обычное текстовое поле «дд.мм.гггг» + кнопка календаря.
+   Встроенное поле type=date показывает подсказку на языке браузера
+   («dd-mm-jjjj», «mm/dd/yyyy»), из-за этого люди путались. */
+.date-field { position: relative; display: flex; }
+.f .date-field input.date-text { font-family: var(--mono); padding-right: 42px; }
+.f .date-field input.date-text.bad { border-color: var(--warn); background: #fdf4f1; }
+.date-btn {
+    position: absolute; right: 1px; top: 1px; bottom: 1px;
+    width: 38px;
+    border: 0; border-left: 1px solid var(--line);
+    border-radius: 0 4px 4px 0;
+    background: var(--surface);
+    color: var(--muted);
+    cursor: pointer;
+    display: grid; place-items: center;
+}
+.date-btn:hover { color: var(--ink); background: #f3f5f7; }
+.date-btn:disabled { cursor: not-allowed; opacity: .5; }
+.date-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* Скрытый системный календарь: открывается кнопкой, на экране не виден */
+.f .date-field input.date-pick {
+    position: absolute; right: 0; bottom: 0;
+    width: 38px; height: 100%;
+    opacity: 0; pointer-events: none;
+    border: 0; padding: 0;
+}
 
 /* ---------- сканы ---------- */
 .files { margin-top: 6px; }
@@ -307,6 +342,14 @@ legend {
 .file .meta { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
 .upload { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
 .upload select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-size: 14px; }
+/* Системная кнопка файла подписывается языком браузера
+   («Bestand kiezen», «Choose file»), поэтому она спрятана,
+   а вместо неё своя кнопка с русской надписью. */
+.upload input[type=file] {
+    position: absolute; width: 1px; height: 1px;
+    opacity: 0; overflow: hidden; pointer-events: none;
+}
+.upload .file-name { font-size: 14px; color: var(--muted); }
 
 /* ---------- очередь ---------- */
 .qbtn {
@@ -397,6 +440,7 @@ legend {
 
 @media (max-width: 640px) {
     .grid { grid-template-columns: 1fr; }
+    fieldset { padding: 12px 12px 14px; }
     .row { grid-template-columns: 48px 1fr; }
     .row .track { grid-column: 2; }
     .modal-foot { position: sticky; bottom: 0; }
@@ -481,7 +525,9 @@ legend {
                 <div class="files" id="filesList"></div>
                 <div class="upload">
                     <select id="docType"></select>
-                    <input type="file" id="fileInput" accept="image/*,application/pdf" onchange="uploadFiles()">
+                    <input type="file" id="fileInput" accept="image/*,application/pdf" onchange="uploadFiles()" tabindex="-1" aria-hidden="true">
+                    <button type="button" class="btn" id="fileBtn" onclick="$('fileInput').click()">Выбрать файл…</button>
+                    <span class="file-name" id="fileName">Файл не выбран</span>
                 </div>
                 <p class="hint" id="uploadHint" style="margin-top:10px; display:none">
                     Фотографии сжимаются в браузере перед отправкой, файлы кладутся на Google Диск.
@@ -1097,7 +1143,7 @@ function buildForm(data) {
     }).join('');
 
     if (cancelled) {
-        $('cardForm').querySelectorAll('input,select').forEach(function (el) { el.disabled = true; });
+        $('cardForm').querySelectorAll('input,select,button').forEach(function (el) { el.disabled = true; });
         $('cardForm').insertAdjacentHTML('afterbegin',
             '<p class="hint" style="color:var(--warn)">Карточка аннулирована: ' +
             esc(d['Причина аннулирования'] || '') + '. Правка запрещена.</p>');
@@ -1119,9 +1165,21 @@ function fieldHtml(f, d) {
     if (kind === 'date') {
         // Границы те же, что проверяет сервер: браузер отсекает
         // явную опечатку в годе ещё до отправки
-        control = '<input type="date" id="' + id + '" data-name="' + esc(name) +
-                  '" min="' + esc(opt.min || '2000-01-01') + '" max="2100-12-31"' +
-                  ' value="' + esc(toISO(value)) + '">';
+        // Само значение хранится в текстовом поле как «дд.мм.гггг»,
+        // скрытый type=date нужен только ради всплывающего календаря
+        const min = opt.min || '2000-01-01', max = '2100-12-31';
+        control = '<div class="date-field">' +
+            '<input type="text" class="date-text" id="' + id + '" data-name="' + esc(name) +
+            '" data-kind="date" data-min="' + esc(min) + '" data-max="' + max + '"' +
+            ' placeholder="дд.мм.гггг" inputmode="numeric" maxlength="10" autocomplete="off"' +
+            ' value="' + esc(value) + '" oninput="dateType(this)" onblur="dateCheck(this)">' +
+            '<input type="date" class="date-pick" tabindex="-1" aria-hidden="true"' +
+            ' min="' + esc(min) + '" max="' + max + '" onchange="datePicked(this)">' +
+            '<button type="button" class="date-btn" onclick="dateOpen(this)"' +
+            ' aria-label="Выбрать дату в календаре" title="Календарь">' +
+            '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/>' +
+            '<path d="M3 10h18M8 3v4M16 3v4"/></svg></button>' +
+            '</div>';
 
     } else if (kind === 'number') {
         // Верхняя граница берётся из программы стажировки в templates.js:
@@ -1186,9 +1244,77 @@ function collectForm() {
     const out = {};
     $('cardForm').querySelectorAll('[data-name]').forEach(function (el) {
         const name = el.getAttribute('data-name');
-        out[name] = el.type === 'date' ? fromISO(el.value) : el.value.trim();
+        out[name] = el.value.trim();
     });
     return out;
+}
+
+/* ---------- поле даты ---------- */
+
+/** Пока печатают: оставляем только цифры и сами ставим точки. */
+function dateType(el) {
+    // Запятая, слэш, пробел и дефис тоже считаются разделителем
+    const raw = el.value.replace(/[,\/\- ]/g, '.').replace(/[^\d.]/g, '');
+    const parts = raw.split('.');
+    let v = raw.slice(0, 10);
+    // Пока день и месяц набраны двумя цифрами, точки ставим сами.
+    // Если человек пишет «5.7.2026», не мешаем: нули допишутся при выходе из поля.
+    if (parts.length <= 3 && parts.slice(0, -1).every(function (p) { return p.length === 2; })) {
+        const d = raw.replace(/\./g, '').slice(0, 8);
+        v = d.length > 4 ? d.slice(0, 2) + '.' + d.slice(2, 4) + '.' + d.slice(4) :
+            d.length > 2 ? d.slice(0, 2) + '.' + d.slice(2) : d;
+        if (/\.$/.test(raw) && (d.length === 2 || d.length === 4)) v += '.';
+    }
+    if (v !== el.value) el.value = v;
+    el.classList.remove('bad');
+}
+
+/** Текст поля даты -> ошибка или пусто. */
+function dateProblem(el) {
+    const v = el.value.trim();
+    if (!v) return '';
+    const iso = toISO(v);
+    const d = iso ? new Date(iso + 'T00:00:00') : null;
+    if (!d || isNaN(d) || fromISO(d.getFullYear() + '-' +
+            String(d.getMonth() + 1).padStart(2, '0') + '-' +
+            String(d.getDate()).padStart(2, '0')) !== v) {
+        return 'дата «' + v + '» не распознана, нужно дд.мм.гггг';
+    }
+    const min = el.getAttribute('data-min'), max = el.getAttribute('data-max');
+    if ((min && iso < min) || (max && iso > max)) return 'дата «' + v + '» вне допустимого диапазона';
+    return '';
+}
+
+function dateCheck(el) {
+    // «5.7.2026» и «05072026» доводим до вида 05.07.2026
+    const m = el.value.trim().match(/^(\d{1,2})[.\/,\- ](\d{1,2})[.\/,\- ](\d{4})$/);
+    if (m) el.value = m[1].padStart(2, '0') + '.' + m[2].padStart(2, '0') + '.' + m[3];
+    el.classList.toggle('bad', !!dateProblem(el));
+}
+
+function dateOpen(btn) {
+    const box = btn.parentNode;
+    const text = box.querySelector('.date-text');
+    const pick = box.querySelector('.date-pick');
+    if (text.disabled) return;
+    pick.value = toISO(text.value.trim());
+    try {
+        if (pick.showPicker) { pick.showPicker(); return; }
+    } catch (e) {}
+    // Старые браузеры без showPicker
+    pick.style.pointerEvents = 'auto';
+    pick.focus();
+    pick.click();
+    pick.style.pointerEvents = '';
+}
+
+function datePicked(pick) {
+    const text = pick.parentNode.querySelector('.date-text');
+    text.value = fromISO(pick.value);
+    text.classList.remove('bad');
+    // Чтобы сработал черновик новой карточки
+    text.dispatchEvent(new Event('input', { bubbles: true }));
+    text.focus();
 }
 
 function renderFoot() {
@@ -1272,8 +1398,18 @@ function hideFormErr() { $('formErr').style.display = 'none'; }
    ============================================================ */
 
 function saveCard() {
-    const card = collectForm();
     const errs = [];
+
+    // Даты теперь можно печатать руками, поэтому опечатку ловим до отправки.
+    // dateCheck заодно дописывает ведущие нули, так что форма читается после.
+    $('cardForm').querySelectorAll('[data-kind="date"]').forEach(function (el) {
+        dateCheck(el);
+        const p = dateProblem(el);
+        if (p) errs.push(el.getAttribute('data-name') + ': ' + p);
+    });
+    if (errs.length) { showFormErr(errs); return; }
+
+    const card = collectForm();
 
     FORM.forEach(function (b) {
         b.fields.forEach(function (f) {
@@ -1496,6 +1632,8 @@ async function uploadFiles() {
     const docType = $('docType').value;
     const who = S.current['ФИО сокращённое'] || S.current['ФИО полное'] || '';
 
+    $('fileName').textContent = file.name;
+    $('fileBtn').disabled = true;
     bar(true);
     try {
         const isImage = file.type.indexOf('image/') === 0;
@@ -1550,6 +1688,8 @@ async function uploadFiles() {
     } finally {
         bar(false);
         input.value = '';
+        $('fileBtn').disabled = false;
+        $('fileName').textContent = 'Файл не выбран';
     }
 }
 
@@ -1754,7 +1894,8 @@ function applyToForm_(card) {
         const name = el.getAttribute('data-name');
         if (!(name in card)) return;
         const v = card[name] === null || card[name] === undefined ? '' : String(card[name]);
-        el.value = (el.type === 'date') ? toISO(v) : v;
+        el.value = v;
+        if (el.getAttribute('data-kind') === 'date') el.classList.remove('bad');
     });
 }
 
