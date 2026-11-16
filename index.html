@@ -888,7 +888,7 @@ async function login() {
     if (!r.success) { $('loginErr').textContent = r.error || 'Неверный пароль'; return; }
 
     S.pass = pass;
-    sessionStorage.setItem('auth', pass);
+    sessionStorage.setItem(K.auth, pass);
     applyInit(r);
     start();
 }
@@ -914,7 +914,7 @@ function applyInit(r) {
     fillSelect($('fYear'), years, '', 'Все годы');
 
     const names = S.people.map(function (p) { return p.full; });
-    S.user = localStorage.getItem('user') || names[0] || '';
+    S.user = localStorage.getItem(K.user) || names[0] || '';
     fillSelect($('user'), names, S.user, names.length ? null : 'справочник пуст');
 
     fillSelect($('docType'), S.docTypes, S.docTypes[0] || '');
@@ -922,7 +922,7 @@ function applyInit(r) {
 
 function rememberUser() {
     S.user = $('user').value;
-    localStorage.setItem('user', S.user);
+    localStorage.setItem(K.user, S.user);
 }
 
 function start() {
@@ -943,7 +943,7 @@ async function logout() {
         });
         if (!ok) return;
     }
-    sessionStorage.removeItem('auth');
+    sessionStorage.removeItem(K.auth);
     location.reload();
 }
 
@@ -1730,12 +1730,12 @@ async function deleteFile(fileId) {
    ============================================================ */
 
 function saveDraft() {
-    try { localStorage.setItem('draft', JSON.stringify(collectForm())); } catch (e) {}
+    try { localStorage.setItem(K.draft, JSON.stringify(collectForm())); } catch (e) {}
 }
 function loadDraft() {
-    try { return JSON.parse(localStorage.getItem('draft') || '{}'); } catch (e) { return {}; }
+    try { return JSON.parse(localStorage.getItem(K.draft) || '{}'); } catch (e) { return {}; }
 }
-function clearDraft() { localStorage.removeItem('draft'); }
+function clearDraft() { localStorage.removeItem(K.draft); }
 
 
 /* ============================================================
@@ -1751,14 +1751,58 @@ function clearDraft() { localStorage.removeItem('draft'); }
    У скана ту же роль играет id элемента очереди.
    ============================================================ */
 
+/* Имена в памяти браузера. Все сервисы живут на одном адресе
+   energo380.github.io, и память у них общая. Под голым именем «queue»
+   очередь «Стажировок» смешивалась с очередью «Учёта»: каждая страница
+   видела чужие записи как свои неотправленные. Поэтому у каждого
+   имени теперь приставка сервиса. */
+const K = {
+    queue: 'stag-queue',
+    draft: 'stag-draft',
+    user:  'stag-user',
+    auth:  'stag-auth'
+};
+
+/** Разовый перенос со старых общих имён. Чужое не трогает. */
+function migrateStorage_() {
+    try {
+        // Из общей очереди забираем только свои записи: у них есть kind.
+        // Записи «Учёта» остаются на месте, «Учёт» заберёт их сам.
+        const old = JSON.parse(localStorage.getItem('queue') || '[]');
+        if (Array.isArray(old) && old.length) {
+            const isMine = function (it) { return it && (it.kind === 'card' || it.kind === 'file'); };
+            const mine = old.filter(isMine);
+            const rest = old.filter(function (it) { return !isMine(it); });
+            if (mine.length) {
+                const cur = JSON.parse(localStorage.getItem(K.queue) || '[]');
+                const have = {};
+                cur.forEach(function (it) { have[it.id] = true; });
+                mine.forEach(function (it) { if (!have[it.id]) cur.push(it); });
+                localStorage.setItem(K.queue, JSON.stringify(cur));
+                if (rest.length) localStorage.setItem('queue', JSON.stringify(rest));
+                else localStorage.removeItem('queue');
+            }
+        }
+        // Черновик был только у «Стажировок»
+        const draft = localStorage.getItem('draft');
+        if (draft !== null) {
+            if (localStorage.getItem(K.draft) === null) localStorage.setItem(K.draft, draft);
+            localStorage.removeItem('draft');
+        }
+        // «Работает: …» общее со «Учётом» - копируем, старое не удаляем
+        const user = localStorage.getItem('user');
+        if (user && localStorage.getItem(K.user) === null) localStorage.setItem(K.user, user);
+    } catch (e) {}
+}
+
 function queueLoad() {
     try {
-        const a = JSON.parse(localStorage.getItem('queue') || '[]');
+        const a = JSON.parse(localStorage.getItem(K.queue) || '[]');
         return Array.isArray(a) ? a : [];
     } catch (e) { return []; }
 }
 function queueSave(a) {
-    try { localStorage.setItem('queue', JSON.stringify(a)); } catch (e) {}
+    try { localStorage.setItem(K.queue, JSON.stringify(a)); } catch (e) {}
     renderQueueButton();
     if ($('queueModal').classList.contains('open')) renderQueue();
     // Список вложений показывает и неотправленные сканы,
@@ -1879,7 +1923,7 @@ async function afterCard_(item, r) {
 async function restoreCard_(item) {
     if (!$('cardModal').classList.contains('open')) {
         if (item.action === 'save') {
-            try { localStorage.setItem('draft', JSON.stringify(item.card)); } catch (e) {}
+            try { localStorage.setItem(K.draft, JSON.stringify(item.card)); } catch (e) {}
             await openCard(null);
             return;
         }
@@ -2073,17 +2117,18 @@ window.addEventListener('beforeunload', function (e) {
 });
 
 window.addEventListener('load', async function () {
+    migrateStorage_();
     queueRecover();
     renderQueueButton();
 
-    const saved = sessionStorage.getItem('auth');
+    const saved = sessionStorage.getItem(K.auth);
     if (!saved) return;
 
     bar(true);
     const r = await api({ action: 'init', password: saved });
     bar(false);
     if (r.success) { S.pass = saved; applyInit(r); start(); }
-    else sessionStorage.removeItem('auth');
+    else sessionStorage.removeItem(K.auth);
 });
 </script>
 
