@@ -114,6 +114,14 @@ button, input, select { font-family: inherit; font-size: 15px; color: inherit; }
 }
 .login-box .btn { width: 100%; }
 .login-err { margin-top: 12px; color: var(--warn); font-size: 13px; min-height: 18px; }
+.pass-field { position: relative; margin-bottom: 14px; }
+.login-box .pass-field input { margin-bottom: 0; padding-right: 92px; }
+.pass-eye {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    border: 0; background: none; padding: 8px 10px; border-radius: 4px;
+    font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.pass-eye:hover { color: var(--ink); }
 
 /* ---------- каркас ---------- */
 .app { display: none; max-width: 1080px; margin: 0 auto; padding: 0 16px 60px; }
@@ -410,7 +418,10 @@ legend {
     <div class="login-box">
         <h1>Стажировки</h1>
         <p>Учёт стажировок электротехнического персонала</p>
-        <input type="password" id="pass" placeholder="Пароль" autocomplete="current-password">
+        <div class="pass-field">
+            <input type="password" id="pass" placeholder="Пароль" autocomplete="current-password">
+            <button type="button" class="pass-eye" id="passEye" aria-pressed="false" aria-controls="pass">Показать</button>
+        </div>
         <button class="btn btn-main" onclick="login()">Войти</button>
         <div class="login-err" id="loginErr"></div>
     </div>
@@ -1862,6 +1873,18 @@ docStyle.textContent = DOC_CSS;
 document.head.appendChild(docStyle);
 
 $('pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+
+/* Показать / скрыть пароль на форме входа — как на сайте АВР */
+function setPassVisible(show) {
+    var i = document.getElementById('pass'), b = document.getElementById('passEye');
+    i.type = show ? 'text' : 'password';
+    b.textContent = show ? 'Скрыть' : 'Показать';
+    b.setAttribute('aria-pressed', String(show));
+}
+document.getElementById('passEye').addEventListener('click', function () {
+    setPassVisible(document.getElementById('pass').type === 'password');
+    document.getElementById('pass').focus();
+});
 
 /* Черновик пишется только у новой карточки. Слушатель стоит на
    контейнере, который живёт всё время работы страницы, поэтому
