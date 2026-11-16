@@ -216,19 +216,22 @@ button, input, select { font-family: inherit; font-size: 15px; color: inherit; }
 /* Подпись стадий: С - стажировка, А - акт, Д - допуск.
    Буквы те же, что в номерах распоряжений. */
 .track { display: flex; gap: 3px; }
+/* Красный - этап не оформлен, зелёный - оформлен.
+   У аннулированной карточки все квадратики серые. */
 .track span {
     width: 24px; height: 24px;
     display: grid; place-items: center;
-    border: 1px solid var(--line);
+    border: 1px solid #b8402a;
     border-radius: 3px;
     font-family: var(--mono);
     font-size: 12px;
-    color: var(--muted);
-    background: var(--surface);
+    font-weight: 600;
+    color: #fff;
+    background: #c4472f;
     transition: background .18s, color .18s, border-color .18s;
 }
-.track span.on { background: var(--ink); border-color: var(--ink); color: #fff; }
-.track.cancelled span { opacity: .35; }
+.track span.on { background: #2e7d4f; border-color: #276b43; color: #fff; }
+.track.cancelled span { background: var(--surface); border-color: var(--line); color: var(--muted); opacity: .6; }
 
 .empty { padding: 44px 20px; text-align: center; color: var(--muted); }
 .more { text-align: center; padding: 14px 0; }
@@ -1001,8 +1004,9 @@ async function loadList(append) {
 function rowHtml(c) {
     const cancelled = c.status === 'Аннулировано';
     const seg = function (letter, on) {
-        return '<span class="' + (on && !cancelled ? 'on' : '') + '" title="' +
-               (on ? 'оформлено' : 'не оформлено') + '">' + letter + '</span>';
+        const what = { 'С': 'Стажировка', 'А': 'Акт', 'Д': 'Допуск' }[letter];
+        return '<span class="' + (on && !cancelled ? 'on' : '') + '" title="' + what + ': ' +
+               (cancelled ? 'карточка аннулирована' : on ? 'оформлено' : 'не оформлено') + '">' + letter + '</span>';
     };
 
     const sub = cancelled
