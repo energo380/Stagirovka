@@ -115,13 +115,16 @@ button, input, select { font-family: inherit; font-size: 15px; color: inherit; }
 .login-box .btn { width: 100%; }
 .login-err { margin-top: 12px; color: var(--warn); font-size: 13px; min-height: 18px; }
 .pass-field { position: relative; margin-bottom: 14px; }
-.login-box .pass-field input { margin-bottom: 0; padding-right: 92px; }
+.login-box .pass-field input { margin-bottom: 0; padding-right: 48px; }
 .pass-eye {
     position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
-    border: 0; background: none; padding: 8px 10px; border-radius: 4px;
-    font-size: 13px; color: var(--muted); cursor: pointer;
+    border: 0; background: none; padding: 8px; border-radius: 4px;
+    color: var(--muted); cursor: pointer;
 }
 .pass-eye:hover { color: var(--ink); }
+.pass-eye svg { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pass-eye .i-hide, .pass-eye[aria-pressed="true"] .i-show { display: none; }
+.pass-eye[aria-pressed="true"] .i-hide { display: block; }
 
 /* ---------- каркас ---------- */
 .app { display: none; max-width: 1080px; margin: 0 auto; padding: 0 16px 60px; }
@@ -420,7 +423,7 @@ legend {
         <p>Учёт стажировок электротехнического персонала</p>
         <div class="pass-field">
             <input type="password" id="pass" placeholder="Пароль" autocomplete="current-password">
-            <button type="button" class="pass-eye" id="passEye" aria-pressed="false" aria-controls="pass">Показать</button>
+            <button type="button" class="pass-eye" id="passEye" aria-pressed="false" aria-controls="pass" aria-label="Показать пароль" title="Показать пароль"><svg class="i-show" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="i-hide" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 5.1A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-2.4 3.3M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg></button>
         </div>
         <button class="btn btn-main" onclick="login()">Войти</button>
         <div class="login-err" id="loginErr"></div>
@@ -1878,7 +1881,8 @@ $('pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') logi
 function setPassVisible(show) {
     var i = document.getElementById('pass'), b = document.getElementById('passEye');
     i.type = show ? 'text' : 'password';
-    b.textContent = show ? 'Скрыть' : 'Показать';
+    b.setAttribute('aria-label', show ? 'Скрыть пароль' : 'Показать пароль');
+    b.title = b.getAttribute('aria-label');
     b.setAttribute('aria-pressed', String(show));
 }
 document.getElementById('passEye').addEventListener('click', function () {
